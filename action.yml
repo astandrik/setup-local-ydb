@@ -1,0 +1,62 @@
+name: Setup Local YDB
+description: Start a local-ydb Docker stack for GitHub Actions CI jobs.
+author: astandrik
+
+branding:
+  icon: database
+  color: blue
+
+inputs:
+  version:
+    description: Exact ghcr.io/ydb-platform/local-ydb tag, or latest to resolve the newest numeric tag.
+    required: false
+    default: "26.1.1.6"
+  tenant:
+    description: Tenant database path to create.
+    required: false
+    default: /local/test
+  auth:
+    description: Enable native YDB auth after bootstrapping the tenant.
+    required: false
+    default: "false"
+  cleanup:
+    description: Remove action-created Docker resources in the post step.
+    required: false
+    default: "true"
+  static-grpc-port:
+    description: Host port for the static/root gRPC endpoint. Auto-selected when omitted.
+    required: false
+  dynamic-grpc-port:
+    description: Host port for the tenant dynamic-node gRPC endpoint. Auto-selected when omitted.
+    required: false
+  monitoring-port:
+    description: Host port for the local-ydb monitoring endpoint. Auto-selected when omitted.
+    required: false
+  container-prefix:
+    description: Prefix for Docker containers, network, volume, and auth artifacts. Auto-generated when omitted.
+    required: false
+
+outputs:
+  endpoint:
+    description: Dynamic tenant gRPC endpoint for application clients.
+  static-endpoint:
+    description: Static/root gRPC endpoint.
+  database:
+    description: Tenant database path.
+  monitoring-url:
+    description: Loopback monitoring URL.
+  image:
+    description: Full Docker image reference used by the action.
+  resolved-version:
+    description: Concrete local-ydb image tag used by the action.
+  username:
+    description: Root username when auth is enabled.
+  password-file:
+    description: Root password file path when auth is enabled.
+
+runs:
+  using: node20
+  main: dist/main/index.js
+  post: dist/post/index.js
+  post-if: always()
+
