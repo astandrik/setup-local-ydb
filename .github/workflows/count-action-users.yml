@@ -1,0 +1,24 @@
+name: Count action users
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  count:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Generate action users badge endpoint
+        uses: cicirello/count-action-users@v1
+        with:
+          action-list: astandrik/setup-local-ydb
+          target-directory: docs/endpoints
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

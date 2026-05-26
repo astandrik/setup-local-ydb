@@ -1,6 +1,7 @@
 # setup-local-ydb
 
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-setup--local--ydb-blue?logo=github)](https://github.com/marketplace/actions/setup-local-ydb)
+[![Action users](https://img.shields.io/endpoint?url=https://astandrik.github.io/setup-local-ydb/endpoints/setup-local-ydb.json)](https://github.com/search?q=%22astandrik%2Fsetup-local-ydb%22+path%3A.github%2Fworkflows+language%3AYAML&type=code)
 
 Provision local YDB in GitHub Actions CI.
 
