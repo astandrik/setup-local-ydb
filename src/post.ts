@@ -10,7 +10,13 @@ async function run(): Promise<void> {
       core.info("cleanup=false; leaving local-ydb Docker resources in place");
       return;
     }
-    if (!state.staticContainer || !state.dynamicContainer || !state.network || !state.volume) {
+    if (
+      !state.staticContainer ||
+      !state.network ||
+      !state.volume ||
+      !state.authDir ||
+      (state.topology === "tenant" && !state.dynamicContainer)
+    ) {
       core.info("No local-ydb cleanup state found");
       return;
     }

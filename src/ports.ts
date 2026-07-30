@@ -5,23 +5,31 @@ export async function resolveRuntimePorts(inputs: ActionInputs): Promise<Runtime
   const used = new Set<number>();
   const staticGrpc = inputs.staticGrpcPort ?? await findOpenPort(used);
   used.add(staticGrpc);
-  const dynamicGrpc = inputs.dynamicGrpcPort ?? await findOpenPort(used);
-  used.add(dynamicGrpc);
+  const dynamicGrpc = inputs.topology === "tenant"
+    ? inputs.dynamicGrpcPort ?? await findOpenPort(used)
+    : undefined;
+  if (dynamicGrpc !== undefined) {
+    used.add(dynamicGrpc);
+  }
   const monitoring = inputs.monitoringPort ?? await findOpenPort(used);
   used.add(monitoring);
 
-  const duplicates = [staticGrpc, dynamicGrpc, monitoring].filter((port, index, ports) => ports.indexOf(port) !== index);
+  const publishedPorts = [staticGrpc, dynamicGrpc, monitoring].filter((port): port is number => port !== undefined);
+  const duplicates = publishedPorts.filter((port, index, ports) => ports.indexOf(port) !== index);
   if (duplicates.length > 0) {
-    throw new Error(`static-grpc-port, dynamic-grpc-port, and monitoring-port must be unique. Duplicate: ${duplicates.join(", ")}`);
+    throw new Error(`Published ports must be unique. Duplicate: ${duplicates.join(", ")}`);
   }
 
-  return {
+  const ports: RuntimePorts = {
     staticGrpc,
-    dynamicGrpc,
-    monitoring,
-    dynamicMonitoring: 8766,
-    dynamicIc: 19002
+    monitoring
   };
+  if (inputs.topology === "tenant") {
+    ports.dynamicGrpc = dynamicGrpc;
+    ports.dynamicMonitoring = 8766;
+    ports.dynamicIc = 19002;
+  }
+  return ports;
 }
 
 async function findOpenPort(excluded: Set<number>): Promise<number> {
@@ -56,4 +64,3 @@ function listenOnRandomPort(): Promise<number> {
     });
   });
 }
-

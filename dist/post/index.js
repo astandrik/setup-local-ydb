@@ -321,7 +321,11 @@ async function run() {
             core.info("cleanup=false; leaving local-ydb Docker resources in place");
             return;
         }
-        if (!state.staticContainer || !state.dynamicContainer || !state.network || !state.volume) {
+        if (!state.staticContainer ||
+            !state.network ||
+            !state.volume ||
+            !state.authDir ||
+            (state.topology === "tenant" && !state.dynamicContainer)) {
             core.info("No local-ydb cleanup state found");
             return;
         }
@@ -379,18 +383,25 @@ exports.readRuntimeState = readRuntimeState;
 const core = __importStar(__nccwpck_require__(5050));
 function saveRuntimeState(config) {
     core.saveState("cleanup", String(config.cleanup));
+    core.saveState("topology", config.topology);
     core.saveState("staticContainer", config.staticContainer);
-    core.saveState("dynamicContainer", config.dynamicContainer);
+    if (config.dynamicContainer) {
+        core.saveState("dynamicContainer", config.dynamicContainer);
+    }
     core.saveState("network", config.network);
     core.saveState("volume", config.volume);
+    core.saveState("authDir", config.authDir);
 }
 function readRuntimeState() {
+    const topology = core.getState("topology") === "root" ? "root" : "tenant";
     return {
         cleanup: core.getState("cleanup") === "true",
+        topology,
         staticContainer: core.getState("staticContainer"),
-        dynamicContainer: core.getState("dynamicContainer"),
+        dynamicContainer: core.getState("dynamicContainer") || undefined,
         network: core.getState("network"),
-        volume: core.getState("volume")
+        volume: core.getState("volume"),
+        authDir: core.getState("authDir")
     };
 }
 //# sourceMappingURL=state.js.map
@@ -449,41 +460,66 @@ const RETRY_DELAY_MS = 2000;
 const STATUS_ATTEMPTS = 45;
 const METADATA_ATTEMPTS = 45;
 const AUTH_DYNAMIC_ATTEMPTS = 2;
-async function setupLocalYdb(config, runner) {
+async function setupLocalYdb(config, runner, dependencyOverrides = {}) {
+    const dependencies = resolveDependencies(dependencyOverrides);
     core.info(`Pulling ${config.image}`);
     await runner.run("docker", ["pull", config.image], { timeoutMs: 60 * 60 * 1000 });
     await runner.run("docker", ["network", "create", config.network], { timeoutMs: 60_000 });
     await runner.run("docker", ["volume", "create", config.volume], { timeoutMs: 60_000 });
     core.info(`Starting static local-ydb node ${config.staticContainer}`);
     await startStaticNode(config, runner);
-    await sleep(5000);
-    await ensureTenant(config, runner, false);
-    core.info(`Starting dynamic tenant node ${config.dynamicContainer}`);
-    await startDynamicNode(config, runner, false);
-    await sleep(5000);
-    await waitForTenantMetadata(config, runner, false);
-    if (config.auth) {
-        core.info("Applying native YDB auth");
-        await applyAuth(config, runner);
+    await dependencies.sleep(5000);
+    if (config.topology === "root") {
+        await waitForRootMetadata(config, runner, false, dependencies);
     }
     else {
-        await verifyAnonymousCapabilities(config);
+        await ensureTenant(config, runner, false, dependencies);
+        core.info(`Starting dynamic tenant node ${requireDynamicContainer(config)}`);
+        await startDynamicNode(config, runner, false);
+        await dependencies.sleep(5000);
+        await waitForTenantMetadata(config, runner, false, dependencies);
+    }
+    if (config.auth) {
+        core.info("Applying native YDB auth");
+        await applyAuth(config, runner, dependencies);
+    }
+    else {
+        await verifyAnonymousCapabilities(config, dependencies.fetch);
     }
 }
 async function cleanupLocalYdb(config, runner) {
-    await runner.run("docker", ["rm", "-f", config.dynamicContainer], { allowFailure: true, timeoutMs: 60_000 });
-    await runner.run("docker", ["rm", "-f", config.staticContainer], { allowFailure: true, timeoutMs: 60_000 });
-    await runner.run("docker", ["network", "rm", config.network], { allowFailure: true, timeoutMs: 60_000 });
-    await runner.run("docker", ["volume", "rm", config.volume], { allowFailure: true, timeoutMs: 60_000 });
+    try {
+        if (config.dynamicContainer) {
+            await runner.run("docker", ["rm", "-f", config.dynamicContainer], { allowFailure: true, timeoutMs: 60_000 });
+        }
+        await runner.run("docker", ["rm", "-f", config.staticContainer], { allowFailure: true, timeoutMs: 60_000 });
+        await runner.run("docker", ["network", "rm", config.network], { allowFailure: true, timeoutMs: 60_000 });
+        await runner.run("docker", ["volume", "rm", config.volume], { allowFailure: true, timeoutMs: 60_000 });
+    }
+    finally {
+        await (0, promises_1.rm)(config.authDir, { recursive: true, force: true });
+    }
 }
 async function collectDiagnostics(config, runner) {
     await core.group("local-ydb diagnostics", async () => {
-        await printDiagnosticCommand(runner, "docker", ["ps", "-a", "--filter", `name=${config.staticContainer}`, "--filter", `name=${config.dynamicContainer}`]);
+        const containerFilters = ["--filter", `name=${config.staticContainer}`];
+        if (config.dynamicContainer) {
+            containerFilters.push("--filter", `name=${config.dynamicContainer}`);
+        }
+        await printDiagnosticCommand(runner, "docker", ["ps", "-a", ...containerFilters]);
         await printDiagnosticCommand(runner, "docker", ["logs", "--tail", "120", config.staticContainer]);
-        await printDiagnosticCommand(runner, "docker", ["logs", "--tail", "120", config.dynamicContainer]);
+        if (config.dynamicContainer) {
+            await printDiagnosticCommand(runner, "docker", ["logs", "--tail", "120", config.dynamicContainer]);
+        }
     });
 }
 async function startStaticNode(config, runner) {
+    const tenantPublishedPort = config.topology === "tenant"
+        ? ["-p", `127.0.0.1:${requireDynamicGrpcPort(config)}:${requireDynamicGrpcPort(config)}`]
+        : [];
+    const topologyEnvironment = config.topology === "tenant"
+        ? ["-e", "YDB_FEATURE_FLAGS=enable_graph_shard"]
+        : [];
     await runner.run("docker", [
         "run", "-d",
         "--name", config.staticContainer,
@@ -491,7 +527,7 @@ async function startStaticNode(config, runner) {
         "--network", config.network,
         "--restart", "no",
         "-p", `127.0.0.1:${config.ports.staticGrpc}:${config.ports.staticGrpc}`,
-        "-p", `127.0.0.1:${config.ports.dynamicGrpc}:${config.ports.dynamicGrpc}`,
+        ...tenantPublishedPort,
         "-p", `127.0.0.1:${config.ports.monitoring}:8765`,
         "-v", `${config.volume}:/ydb_data`,
         "-e", `GRPC_PORT=${config.ports.staticGrpc}`,
@@ -500,12 +536,15 @@ async function startStaticNode(config, runner) {
         "-e", "YDB_GRPC_ENABLE_TLS=0",
         "-e", "YDB_ANONYMOUS_CREDENTIALS=1",
         "-e", "YDB_LOCAL_SURVIVE_RESTART=1",
-        "-e", "YDB_FEATURE_FLAGS=enable_graph_shard",
+        ...topologyEnvironment,
         config.image
     ], { timeoutMs: 60_000 });
 }
 async function startDynamicNode(config, runner, withAuth) {
-    await runner.run("docker", ["rm", "-f", config.dynamicContainer], { allowFailure: true, timeoutMs: 60_000 });
+    const dynamicContainer = requireDynamicContainer(config);
+    const dynamicGrpcPort = requireDynamicGrpcPort(config);
+    const dynamicMonitoringPort = requireDynamicMonitoringPort(config);
+    await runner.run("docker", ["rm", "-f", dynamicContainer], { allowFailure: true, timeoutMs: 60_000 });
     const authMounts = withAuth
         ? ["-v", `${config.dynamicNodeAuthTokenFile}:/run/local-ydb/dynamic-node-auth.pb:ro`]
         : [];
@@ -514,13 +553,13 @@ async function startDynamicNode(config, runner, withAuth) {
         : [];
     await runner.run("docker", [
         "run", "-d",
-        "--name", config.dynamicContainer,
+        "--name", dynamicContainer,
         "--no-healthcheck",
         "--network", `container:${config.staticContainer}`,
         "--restart", "no",
         "-v", `${config.volume}:/ydb_data:ro`,
-        "-e", `GRPC_PORT=${config.ports.dynamicGrpc}`,
-        "-e", `MON_PORT=${config.ports.dynamicMonitoring}`,
+        "-e", `GRPC_PORT=${dynamicGrpcPort}`,
+        "-e", `MON_PORT=${dynamicMonitoringPort}`,
         "-e", "GRPC_TLS_PORT=",
         "-e", "YDB_GRPC_ENABLE_TLS=0",
         ...authMounts,
@@ -530,6 +569,9 @@ async function startDynamicNode(config, runner, withAuth) {
     ], { timeoutMs: 60_000 });
 }
 function dynamicNodeScript(config, authArgs) {
+    const dynamicGrpcPort = requireDynamicGrpcPort(config);
+    const dynamicMonitoringPort = requireDynamicMonitoringPort(config);
+    const dynamicIcPort = requireDynamicIcPort(config);
     return [
         "set -euo pipefail",
         "cfg=/tmp/local-ydb-dynamic-config.yaml",
@@ -541,9 +583,9 @@ function dynamicNodeScript(config, authArgs) {
             "--tcp",
             ...authArgs.map(exec_1.shellQuote),
             "--node-broker", (0, exec_1.shellQuote)(`grpc://127.0.0.1:${config.ports.staticGrpc}`),
-            "--grpc-port", String(config.ports.dynamicGrpc),
-            "--mon-port", String(config.ports.dynamicMonitoring),
-            "--ic-port", String(config.ports.dynamicIc),
+            "--grpc-port", String(dynamicGrpcPort),
+            "--mon-port", String(dynamicMonitoringPort),
+            "--ic-port", String(dynamicIcPort),
             "--tenant", (0, exec_1.shellQuote)(config.tenantPath),
             "--node-host", "127.0.0.1",
             "--node-address", "127.0.0.1",
@@ -552,7 +594,7 @@ function dynamicNodeScript(config, authArgs) {
         ].join(" ")
     ].join("\n");
 }
-async function ensureTenant(config, runner, authenticated) {
+async function ensureTenant(config, runner, authenticated, dependencies) {
     for (let attempt = 1; attempt <= STATUS_ATTEMPTS; attempt += 1) {
         const status = authenticated
             ? await runYdbdWithPassword(config, runner, ["admin", "database", config.tenantPath, "status"], { allowFailure: true })
@@ -572,11 +614,11 @@ async function ensureTenant(config, runner, authenticated) {
         else if (!isRetryableYdbOutput(output) && attempt > 3) {
             throw new exec_1.CommandError(status);
         }
-        await sleep(RETRY_DELAY_MS);
+        await dependencies.sleep(RETRY_DELAY_MS);
     }
     throw new Error(`Timed out waiting for tenant ${config.tenantPath} status`);
 }
-async function waitForTenantMetadata(config, runner, authenticated) {
+async function waitForTenantMetadata(config, runner, authenticated, dependencies) {
     for (let attempt = 1; attempt <= METADATA_ATTEMPTS; attempt += 1) {
         const result = authenticated
             ? await runYdbWithPassword(config, runner, ["scheme", "ls", config.tenantPath], { allowFailure: true })
@@ -587,11 +629,26 @@ async function waitForTenantMetadata(config, runner, authenticated) {
         if (!isRetryableYdbOutput((0, exec_1.resultOutput)(result)) && attempt > 3) {
             throw new exec_1.CommandError(result);
         }
-        await sleep(RETRY_DELAY_MS);
+        await dependencies.sleep(RETRY_DELAY_MS);
     }
     throw new Error(`Timed out waiting for tenant metadata at ${config.tenantPath}`);
 }
-async function applyAuth(config, runner) {
+async function waitForRootMetadata(config, runner, authenticated, dependencies) {
+    for (let attempt = 1; attempt <= METADATA_ATTEMPTS; attempt += 1) {
+        const result = authenticated
+            ? await runRootYdbWithPassword(config, runner, ["scheme", "ls", config.rootDatabase], { allowFailure: true })
+            : await runRootYdb(config, runner, ["scheme", "ls", config.rootDatabase], { allowFailure: true });
+        if (result.ok) {
+            return;
+        }
+        if (!isRetryableYdbOutput((0, exec_1.resultOutput)(result)) && attempt > 3) {
+            throw new exec_1.CommandError(result);
+        }
+        await dependencies.sleep(RETRY_DELAY_MS);
+    }
+    throw new Error(`Timed out waiting for root metadata at ${config.rootDatabase}`);
+}
+async function applyAuth(config, runner, dependencies) {
     await prepareAuthArtifacts(config, runner);
     const rootPassword = await readPasswordFile(config);
     core.setSecret(rootPassword);
@@ -604,21 +661,28 @@ async function applyAuth(config, runner) {
             ...generatedConfigDiscoveryLines("target"),
             "cp \"$target\" \"$target.before-setup-local-ydb-auth\"",
         ].join("\n")], { timeoutMs: 60_000 });
-    await runner.run("docker", ["stop", config.dynamicContainer], { allowFailure: true, timeoutMs: 60_000 });
+    if (config.dynamicContainer) {
+        await runner.run("docker", ["stop", config.dynamicContainer], { allowFailure: true, timeoutMs: 60_000 });
+    }
     await runner.run("docker", ["restart", config.staticContainer], { timeoutMs: 60_000 });
-    await sleep(5000);
+    await dependencies.sleep(5000);
     await runner.run("docker", ["exec", config.staticContainer, "bash", "-lc", [
             "set -euo pipefail",
             ...generatedConfigDiscoveryLines("target"),
             "cp /tmp/setup-local-ydb-config.yaml \"$target\""
         ].join("\n")], { timeoutMs: 60_000 });
     await runner.run("docker", ["restart", config.staticContainer], { timeoutMs: 60_000 });
-    await sleep(5000);
-    await ensureTenant(config, runner, true);
-    await sleep(15000);
-    await writeDynamicNodeAuthToken(config, runner);
-    await startAuthenticatedDynamicNode(config, runner);
-    await verifyAnonymousViewerIsDenied(config);
+    await dependencies.sleep(5000);
+    if (config.topology === "root") {
+        await waitForRootMetadata(config, runner, true, dependencies);
+    }
+    else {
+        await ensureTenant(config, runner, true, dependencies);
+        await dependencies.sleep(15000);
+        await writeDynamicNodeAuthToken(config);
+        await startAuthenticatedDynamicNode(config, runner, dependencies);
+    }
+    await verifyAnonymousViewerIsDenied(config, dependencies.fetch);
 }
 async function prepareAuthArtifacts(config, runner) {
     const configPath = await readGeneratedConfigPath(config, runner);
@@ -644,7 +708,7 @@ async function prepareAuthArtifacts(config, runner) {
     await (0, promises_1.chmod)(config.authConfigPath, 0o600);
     await (0, promises_1.chmod)(config.rootPasswordFile, 0o600);
 }
-async function writeDynamicNodeAuthToken(config, runner) {
+async function writeDynamicNodeAuthToken(config) {
     await (0, promises_1.mkdir)(config.authDir, { recursive: true, mode: 0o700 });
     await (0, promises_1.writeFile)(config.dynamicNodeAuthTokenFile, [
         `StaffApiUserToken: "${escapeTextProto(config.dynamicNodeAuthSid)}"`,
@@ -653,13 +717,13 @@ async function writeDynamicNodeAuthToken(config, runner) {
     ].join("\n"), { mode: 0o600 });
     await (0, promises_1.chmod)(config.dynamicNodeAuthTokenFile, 0o600);
 }
-async function startAuthenticatedDynamicNode(config, runner) {
+async function startAuthenticatedDynamicNode(config, runner, dependencies) {
     let lastError;
     for (let attempt = 1; attempt <= AUTH_DYNAMIC_ATTEMPTS; attempt += 1) {
         await startDynamicNode(config, runner, true);
-        await sleep(5000);
+        await dependencies.sleep(5000);
         try {
-            await waitForTenantMetadata(config, runner, true);
+            await waitForTenantMetadata(config, runner, true, dependencies);
             return;
         }
         catch (error) {
@@ -668,8 +732,8 @@ async function startAuthenticatedDynamicNode(config, runner) {
                 break;
             }
             core.warning(`Authenticated dynamic node did not become ready on attempt ${attempt}; recreating it once.`);
-            await runner.run("docker", ["rm", "-f", config.dynamicContainer], { allowFailure: true, timeoutMs: 60_000 });
-            await sleep(10000);
+            await runner.run("docker", ["rm", "-f", requireDynamicContainer(config)], { allowFailure: true, timeoutMs: 60_000 });
+            await dependencies.sleep(10000);
         }
     }
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
@@ -708,7 +772,13 @@ async function runYdbd(config, runner, args, options = {}) {
     });
 }
 async function runYdb(config, runner, args, options = {}) {
-    return runner.run("docker", ["exec", config.staticContainer, "/ydb", "-e", `grpc://localhost:${config.ports.dynamicGrpc}`, "-d", config.tenantPath, ...args], {
+    return runner.run("docker", ["exec", config.staticContainer, "/ydb", "-e", `grpc://localhost:${requireDynamicGrpcPort(config)}`, "-d", config.tenantPath, ...args], {
+        allowFailure: options.allowFailure,
+        timeoutMs: 120_000
+    });
+}
+async function runRootYdb(config, runner, args, options = {}) {
+    return runner.run("docker", ["exec", config.staticContainer, "/ydb", "-e", `grpc://localhost:${config.ports.staticGrpc}`, "-d", config.rootDatabase, ...args], {
         allowFailure: options.allowFailure,
         timeoutMs: 120_000
     });
@@ -720,7 +790,12 @@ async function runYdbdWithPassword(config, runner, args, options = {}) {
 }
 async function runYdbWithPassword(config, runner, args, options = {}) {
     const password = await readPasswordFile(config);
-    const innerCommand = `/ydb -e grpc://localhost:${config.ports.dynamicGrpc} -d ${(0, exec_1.shellQuote)(config.tenantPath)} --user ${(0, exec_1.shellQuote)(config.rootUser)} --password-file "$password_file" ${args.map(exec_1.shellQuote).join(" ")}`;
+    const innerCommand = `/ydb -e grpc://localhost:${requireDynamicGrpcPort(config)} -d ${(0, exec_1.shellQuote)(config.tenantPath)} --user ${(0, exec_1.shellQuote)(config.rootUser)} --password-file "$password_file" ${args.map(exec_1.shellQuote).join(" ")}`;
+    return runPasswordPipedDockerExec(config, runner, innerCommand, password, options.allowFailure);
+}
+async function runRootYdbWithPassword(config, runner, args, options = {}) {
+    const password = await readPasswordFile(config);
+    const innerCommand = `/ydb -e grpc://localhost:${config.ports.staticGrpc} -d ${(0, exec_1.shellQuote)(config.rootDatabase)} --user ${(0, exec_1.shellQuote)(config.rootUser)} --password-file "$password_file" ${args.map(exec_1.shellQuote).join(" ")}`;
     return runPasswordPipedDockerExec(config, runner, innerCommand, password, options.allowFailure);
 }
 async function runPasswordPipedDockerExec(config, runner, innerCommand, password, allowFailure) {
@@ -739,15 +814,16 @@ async function runPasswordPipedDockerExec(config, runner, innerCommand, password
         redactions: [password]
     });
 }
-async function verifyAnonymousCapabilities(config) {
-    const url = `${config.monitoringUrl}/viewer/json/capabilities?database=${encodeURIComponent(config.tenantPath)}`;
-    const response = await fetch(url);
+async function verifyAnonymousCapabilities(config, fetchImplementation) {
+    const path = config.topology === "root" ? "tenants" : "capabilities";
+    const url = `${config.monitoringUrl}/viewer/json/${path}?database=${encodeURIComponent(config.databasePath)}`;
+    const response = await fetchImplementation(url);
     if (!response.ok) {
-        core.warning(`Viewer capabilities check returned HTTP ${response.status}`);
+        core.warning(`Viewer ${path} check returned HTTP ${response.status}`);
     }
 }
-async function verifyAnonymousViewerIsDenied(config) {
-    const response = await fetch(`${config.monitoringUrl}/viewer/json/whoami`);
+async function verifyAnonymousViewerIsDenied(config, fetchImplementation) {
+    const response = await fetchImplementation(`${config.monitoringUrl}/viewer/json/whoami`);
     if (response.status !== 401) {
         throw new Error(`Expected anonymous viewer whoami to return 401 after auth hardening, got HTTP ${response.status}`);
     }
@@ -794,6 +870,36 @@ function escapeTextProto(value) {
 }
 function isRetryableYdbOutput(output) {
     return /CLIENT_UNAUTHENTICATED|SCHEME_ERROR|No database found|Path not found|Path does not exist|connection refused|Endpoint list is empty|Could not resolve redirected path|Failed to connect|TRANSPORT_UNAVAILABLE|Status:\s*UNAVAILABLE|UNAUTHORIZED|Invalid password|Access denied/i.test(output);
+}
+function requireDynamicContainer(config) {
+    if (!config.dynamicContainer) {
+        throw new Error("tenant topology requires a dynamic container");
+    }
+    return config.dynamicContainer;
+}
+function requireDynamicGrpcPort(config) {
+    if (config.ports.dynamicGrpc === undefined) {
+        throw new Error("tenant topology requires a dynamic gRPC port");
+    }
+    return config.ports.dynamicGrpc;
+}
+function requireDynamicMonitoringPort(config) {
+    if (config.ports.dynamicMonitoring === undefined) {
+        throw new Error("tenant topology requires a dynamic monitoring port");
+    }
+    return config.ports.dynamicMonitoring;
+}
+function requireDynamicIcPort(config) {
+    if (config.ports.dynamicIc === undefined) {
+        throw new Error("tenant topology requires a dynamic IC port");
+    }
+    return config.ports.dynamicIc;
+}
+function resolveDependencies(overrides) {
+    return {
+        sleep: overrides.sleep ?? sleep,
+        fetch: overrides.fetch ?? fetch
+    };
 }
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));

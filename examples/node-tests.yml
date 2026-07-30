@@ -23,6 +23,7 @@ jobs:
         uses: astandrik/setup-local-ydb@v1
         with:
           version: 26.1.1.6
+          topology: tenant
           tenant: /local/test
 
       - name: Run integration tests

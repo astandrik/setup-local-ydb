@@ -5,7 +5,7 @@
 
 Provision local YDB in GitHub Actions CI.
 
-This action starts a Docker-based `local-ydb` stack on a Linux runner and exports connection settings for later workflow steps.
+This action starts Docker-based `local-ydb` on a Linux runner and exports connection settings for later workflow steps. The default `tenant` topology preserves the static + dynamic-node stack; the opt-in `root` topology starts only the static `/local` database.
 
 ```yaml
 steps:
@@ -15,6 +15,7 @@ steps:
     id: ydb
     with:
       version: 26.1.1.6
+      topology: tenant
       tenant: /local/test
 
   - run: |
@@ -22,7 +23,21 @@ steps:
       echo "$LOCAL_YDB_DATABASE"
 ```
 
-The action starts `ghcr.io/ydb-platform/local-ydb`, creates a CMS tenant database such as `/local/test`, waits until the tenant metadata is reachable, and exports connection settings for later steps.
+The action starts `ghcr.io/ydb-platform/local-ydb`, waits until the selected database is reachable, and exports connection settings for later steps.
+
+Use the root-only topology when tests need the embedded `/local` database without a CMS tenant, GraphShard, or dynamic node:
+
+```yaml
+- uses: astandrik/setup-local-ydb@v1
+  id: ydb
+  with:
+    version: 26.1.1.6
+    topology: root
+
+- run: |
+    test "${{ steps.ydb.outputs.database }}" = "/local"
+    test "${{ steps.ydb.outputs.endpoint }}" = "${{ steps.ydb.outputs.static-endpoint }}"
+```
 
 Enable native YDB auth when your tests need authenticated behavior:
 
@@ -30,30 +45,34 @@ Enable native YDB auth when your tests need authenticated behavior:
 - uses: astandrik/setup-local-ydb@v1
   with:
     version: 26.1.1.6
-    tenant: /local/test
+    topology: root
     auth: true
 ```
+
+In root auth mode the action hardens and restarts only the static node, verifies authenticated access to `/local`, and confirms anonymous viewer access returns HTTP 401.
 
 ## Examples
 
 - [Basic local YDB workflow](examples/basic.yml)
 - [Native auth workflow](examples/auth.yml)
+- [Root-only local YDB workflow](examples/root.yml)
 - [Node.js integration tests](examples/node-tests.yml)
 
 ## Versioning
 
-Use `astandrik/setup-local-ydb@v1` to receive compatible v1 updates. Pin an immutable release such as `astandrik/setup-local-ydb@v1.0.0` when a workflow needs fully reproducible action code.
+Use `astandrik/setup-local-ydb@v1` to receive compatible v1 updates. Pin an immutable release such as `astandrik/setup-local-ydb@v1.1.0` when a workflow needs fully reproducible action code.
 
 ## Inputs
 
 | Name | Default | Description |
 | --- | --- | --- |
 | `version` | `26.1.1.6` | Exact `ghcr.io/ydb-platform/local-ydb` tag, or `latest` to resolve the newest numeric tag. |
-| `tenant` | `/local/test` | Tenant database path to create. |
-| `auth` | `false` | Enable native YDB auth after bootstrapping the tenant. |
-| `cleanup` | `true` | Remove action-created containers, network, and volume in the post step. |
+| `topology` | `tenant` | `tenant` starts static + dynamic nodes; `root` starts only static `/local`. |
+| `tenant` | `/local/test` | Tenant database path for `tenant` topology. Ignored for `root`. |
+| `auth` | `false` | Enable native YDB auth after bootstrapping the selected topology. |
+| `cleanup` | `true` | Remove action-created containers, network, volume, and auth directory in the post step. |
 | `static-grpc-port` | auto | Host port for `/local` root/static gRPC. |
-| `dynamic-grpc-port` | auto | Host port for the tenant dynamic-node gRPC endpoint. |
+| `dynamic-grpc-port` | auto | Host port for the tenant dynamic-node gRPC endpoint. Not applicable to `root`. |
 | `monitoring-port` | auto | Host port for monitoring. |
 | `container-prefix` | auto | Prefix for Docker resource names. |
 
@@ -61,9 +80,9 @@ Use `astandrik/setup-local-ydb@v1` to receive compatible v1 updates. Pin an immu
 
 | Name | Description |
 | --- | --- |
-| `endpoint` | Dynamic tenant gRPC endpoint. |
+| `endpoint` | Application gRPC endpoint: dynamic for `tenant`, static for `root`. |
 | `static-endpoint` | Static/root gRPC endpoint. |
-| `database` | Tenant database path. |
+| `database` | Effective database path: the tenant input for `tenant`, `/local` for `root`. |
 | `monitoring-url` | Loopback monitoring URL. |
 | `image` | Full Docker image reference used by the action. |
 | `resolved-version` | Concrete image tag used by the action. |
@@ -76,6 +95,7 @@ The same values are also exported as `LOCAL_YDB_ENDPOINT`, `LOCAL_YDB_DATABASE`,
 
 - Linux runners with Docker are required.
 - All host ports are bound to `127.0.0.1`.
+- `root` topology does not create a CMS tenant, GraphShard, dynamic node, or dynamic-node token.
 - Prefer exact image tags for reproducible CI.
 - SSH profiles, MCP tools, storage migration, version upgrades, dump/restore, and remote-host operations are outside v1 scope.
 

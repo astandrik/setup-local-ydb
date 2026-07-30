@@ -13,6 +13,7 @@ describe("config", () => {
       GITHUB_JOB: "test"
     });
     expect(inputs.version).toBe("26.1.1.6");
+    expect(inputs.topology).toBe("tenant");
     expect(inputs.tenant).toBe("/local/test");
     expect(inputs.auth).toBe(false);
     expect(inputs.cleanup).toBe(true);
@@ -22,6 +23,7 @@ describe("config", () => {
   it("parses explicit inputs", () => {
     const inputs = parseActionInputs(getInput({
       version: "latest",
+      topology: "tenant",
       tenant: "/local/ci",
       auth: "yes",
       cleanup: "0",
@@ -32,6 +34,7 @@ describe("config", () => {
     }));
     expect(inputs).toMatchObject({
       version: "latest",
+      topology: "tenant",
       tenant: "/local/ci",
       auth: true,
       cleanup: false,
@@ -44,6 +47,27 @@ describe("config", () => {
 
   it("rejects invalid tenant paths", () => {
     expect(() => parseActionInputs(getInput({ tenant: "/Root/test" }))).toThrow(/tenant must match/);
+  });
+
+  it("parses root topology without validating the tenant input", () => {
+    const inputs = parseActionInputs(getInput({
+      topology: "root",
+      tenant: "/ignored"
+    }));
+
+    expect(inputs.topology).toBe("root");
+    expect(inputs.tenant).toBe("/ignored");
+  });
+
+  it("rejects unsupported topologies", () => {
+    expect(() => parseActionInputs(getInput({ topology: "serverless" }))).toThrow(/topology must be one of/);
+  });
+
+  it("rejects dynamic-grpc-port for root topology", () => {
+    expect(() => parseActionInputs(getInput({
+      topology: "root",
+      "dynamic-grpc-port": "2137"
+    }))).toThrow(/dynamic-grpc-port is not applicable/);
   });
 
   it("rejects invalid booleans", () => {
@@ -73,5 +97,22 @@ describe("config", () => {
     expect(config.staticContainer).toBe("setup-local-ydb-test-static");
     expect(config.rootPasswordFile).toBe("/tmp/runner/setup-local-ydb-test-auth/root.password");
   });
-});
 
+  it("builds root runtime outputs without dynamic resources", () => {
+    const inputs = parseActionInputs(getInput({
+      topology: "root",
+      tenant: "/ignored",
+      "container-prefix": "setup-local-ydb-root"
+    }));
+    const config = buildRuntimeConfig(inputs, {
+      staticGrpc: 32136,
+      monitoring: 38765
+    }, "26.1.1.6", { RUNNER_TEMP: "/tmp/runner" });
+
+    expect(config.databasePath).toBe("/local");
+    expect(config.endpoint).toBe("grpc://127.0.0.1:32136");
+    expect(config.endpoint).toBe(config.staticEndpoint);
+    expect(config.dynamicContainer).toBeUndefined();
+    expect(config.ports.dynamicGrpc).toBeUndefined();
+  });
+});

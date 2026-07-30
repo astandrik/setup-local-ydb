@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Verify tracked dist is current
+        run: git diff --exit-code -- dist
+
+  smoke:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - topology: tenant
+            auth: "false"
+            database: /local/test
+          - topology: tenant
+            auth: "true"
+            database: /local/test
+          - topology: root
+            auth: "false"
+            database: /local
+          - topology: root
+            auth: "true"
+            database: /local
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start local YDB
+        id: ydb
+        uses: ./
+        with:
+          version: 26.1.1.6
+          topology: ${{ matrix.topology }}
+          tenant: /local/test
+          auth: ${{ matrix.auth }}
+
+      - name: Verify topology outputs and readiness
+        env:
+          AUTH: ${{ matrix.auth }}
+          DATABASE: ${{ steps.ydb.outputs.database }}
+          ENDPOINT: ${{ steps.ydb.outputs.endpoint }}
+          EXPECTED_DATABASE: ${{ matrix.database }}
+          MONITORING_URL: ${{ steps.ydb.outputs.monitoring-url }}
+          PASSWORD_FILE: ${{ steps.ydb.outputs.password-file }}
+          STATIC_ENDPOINT: ${{ steps.ydb.outputs.static-endpoint }}
+          TOPOLOGY: ${{ matrix.topology }}
+          USERNAME: ${{ steps.ydb.outputs.username }}
+        run: |
+          set -euo pipefail
+          test "${DATABASE}" = "${EXPECTED_DATABASE}"
+          if [ "${TOPOLOGY}" = "root" ]; then
+            test "${ENDPOINT}" = "${STATIC_ENDPOINT}"
+          else
+            test "${ENDPOINT}" != "${STATIC_ENDPOINT}"
+          fi
+          if [ "${AUTH}" = "true" ]; then
+            test "${USERNAME}" = "root"
+            test -s "${PASSWORD_FILE}"
+            status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "${MONITORING_URL}/viewer/json/whoami")
+            test "${status}" = "401"
+          elif [ "${TOPOLOGY}" = "root" ]; then
+            curl --fail --silent --show-error "${MONITORING_URL}/viewer/json/tenants?database=%2Flocal" >/tmp/local-ydb-viewer.json
+          else
+            curl --fail --silent --show-error "${MONITORING_URL}/viewer/json/capabilities?database=%2Flocal%2Ftest" >/tmp/local-ydb-viewer.json
+          fi
