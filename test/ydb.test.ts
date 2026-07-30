@@ -1,7 +1,8 @@
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import YAML from "yaml";
 import { buildRuntimeConfig, parseActionInputs, type GetInput, type RuntimeConfig } from "../src/config";
 import type { CommandResult, RunOptions } from "../src/exec";
 import { cleanupLocalYdb, collectDiagnostics, setupLocalYdb } from "../src/ydb";
@@ -132,6 +133,26 @@ describe("setupLocalYdb", () => {
     )).toBe(true);
     await expect(stat(config.dynamicNodeAuthTokenFile)).rejects.toThrow();
     expect(fetchMock).toHaveBeenCalledWith(`${config.monitoringUrl}/viewer/json/whoami`);
+  });
+
+  it("does not restrict database bootstrap during tenant auth hardening", async () => {
+    const config = await runtimeConfig("tenant", true);
+    const runner = new RecordingRunner();
+
+    await setupLocalYdb(config, runner, {
+      sleep: noWait,
+      fetch: vi.fn(async () => new Response("", { status: 401 }))
+    });
+
+    const document = YAML.parse(await readFile(config.authConfigPath, "utf8")) as {
+      domains_config: {
+        security_config: Record<string, unknown>;
+      };
+    };
+    const securityConfig = document.domains_config.security_config;
+
+    expect(securityConfig.database_allowed_sids).toBeUndefined();
+    expect(securityConfig.bootstrap_allowed_sids).toBeUndefined();
   });
 });
 
