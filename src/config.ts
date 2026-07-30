@@ -8,8 +8,11 @@ export const DEFAULT_ROOT_DATABASE = "/local";
 export const ROOT_USER = "root";
 export const DYNAMIC_NODE_AUTH_SID = "root@builtin";
 
+export type Topology = "tenant" | "root";
+
 export interface ActionInputs {
   version: string;
+  topology: Topology;
   tenant: string;
   auth: boolean;
   cleanup: boolean;
@@ -21,13 +24,15 @@ export interface ActionInputs {
 
 export interface RuntimePorts {
   staticGrpc: number;
-  dynamicGrpc: number;
+  dynamicGrpc?: number;
   monitoring: number;
-  dynamicMonitoring: number;
-  dynamicIc: number;
+  dynamicMonitoring?: number;
+  dynamicIc?: number;
 }
 
 export interface RuntimeConfig {
+  topology: Topology;
+  databasePath: string;
   tenantPath: string;
   rootDatabase: string;
   version: string;
@@ -36,7 +41,7 @@ export interface RuntimeConfig {
   cleanup: boolean;
   prefix: string;
   staticContainer: string;
-  dynamicContainer: string;
+  dynamicContainer?: string;
   network: string;
   volume: string;
   ports: RuntimePorts;
@@ -55,19 +60,27 @@ export type GetInput = (name: string, options?: { required?: boolean }) => strin
 
 export function parseActionInputs(getInput: GetInput, env: NodeJS.ProcessEnv = process.env): ActionInputs {
   const version = getInput("version").trim() || DEFAULT_VERSION;
+  const topology = parseTopologyInput(getInput("topology"));
   const tenant = getInput("tenant").trim() || DEFAULT_TENANT;
-  validateTenantPath(tenant);
+  if (topology === "tenant") {
+    validateTenantPath(tenant);
+  }
 
   const auth = parseBooleanInput(getInput("auth"), "auth", false);
   const cleanup = parseBooleanInput(getInput("cleanup"), "cleanup", true);
   const staticGrpcPort = parseOptionalPort(getInput("static-grpc-port"), "static-grpc-port");
-  const dynamicGrpcPort = parseOptionalPort(getInput("dynamic-grpc-port"), "dynamic-grpc-port");
+  const dynamicGrpcPortInput = getInput("dynamic-grpc-port");
+  if (topology === "root" && dynamicGrpcPortInput.trim()) {
+    throw new Error("dynamic-grpc-port is not applicable when topology is root");
+  }
+  const dynamicGrpcPort = parseOptionalPort(dynamicGrpcPortInput, "dynamic-grpc-port");
   const monitoringPort = parseOptionalPort(getInput("monitoring-port"), "monitoring-port");
   const containerPrefixInput = getInput("container-prefix").trim();
   const containerPrefix = sanitizeDockerName(containerPrefixInput || defaultContainerPrefix(env));
 
   return {
     version,
+    topology,
     tenant,
     auth,
     cleanup,
@@ -84,15 +97,24 @@ export function buildRuntimeConfig(
   resolvedVersion: string,
   env: NodeJS.ProcessEnv = process.env
 ): RuntimeConfig {
-  const duplicatePorts = findDuplicatePorts([ports.staticGrpc, ports.dynamicGrpc, ports.monitoring]);
+  const duplicatePorts = findDuplicatePorts(
+    [ports.staticGrpc, ports.dynamicGrpc, ports.monitoring].filter((port): port is number => port !== undefined)
+  );
   if (duplicatePorts.length > 0) {
     throw new Error(`Published host ports must be unique. Duplicate: ${duplicatePorts.join(", ")}`);
+  }
+  if (inputs.topology === "tenant" && ports.dynamicGrpc === undefined) {
+    throw new Error("tenant topology requires a dynamic gRPC port");
   }
 
   const prefix = sanitizeDockerName(inputs.containerPrefix);
   const authRoot = join(env.RUNNER_TEMP || tmpdir(), `${prefix}-auth`);
+  const staticEndpoint = `grpc://127.0.0.1:${ports.staticGrpc}`;
+  const databasePath = inputs.topology === "root" ? DEFAULT_ROOT_DATABASE : inputs.tenant;
 
   return {
+    topology: inputs.topology,
+    databasePath,
     tenantPath: inputs.tenant,
     rootDatabase: DEFAULT_ROOT_DATABASE,
     version: resolvedVersion,
@@ -101,13 +123,13 @@ export function buildRuntimeConfig(
     cleanup: inputs.cleanup,
     prefix,
     staticContainer: `${prefix}-static`,
-    dynamicContainer: `${prefix}-dynamic`,
+    dynamicContainer: inputs.topology === "tenant" ? `${prefix}-dynamic` : undefined,
     network: `${prefix}-net`,
     volume: `${prefix}-data`,
     ports,
     monitoringUrl: `http://127.0.0.1:${ports.monitoring}`,
-    endpoint: `grpc://127.0.0.1:${ports.dynamicGrpc}`,
-    staticEndpoint: `grpc://127.0.0.1:${ports.staticGrpc}`,
+    endpoint: inputs.topology === "root" ? staticEndpoint : `grpc://127.0.0.1:${ports.dynamicGrpc}`,
+    staticEndpoint,
     authDir: authRoot,
     authConfigPath: join(authRoot, "config.auth.yaml"),
     rootPasswordFile: join(authRoot, "root.password"),
@@ -115,6 +137,14 @@ export function buildRuntimeConfig(
     rootUser: ROOT_USER,
     dynamicNodeAuthSid: DYNAMIC_NODE_AUTH_SID
   };
+}
+
+export function parseTopologyInput(value: string): Topology {
+  const normalized = value.trim().toLowerCase() || "tenant";
+  if (normalized === "tenant" || normalized === "root") {
+    return normalized;
+  }
+  throw new Error(`topology must be one of tenant, root; got ${value}`);
 }
 
 export function validateTenantPath(tenant: string): void {

@@ -1,0 +1,30 @@
+name: local-ydb root
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start root-only local YDB
+        id: ydb
+        uses: astandrik/setup-local-ydb@v1
+        with:
+          version: 26.1.1.6
+          topology: root
+
+      - name: Check root connection settings
+        env:
+          YDB_ENDPOINT: ${{ steps.ydb.outputs.endpoint }}
+          YDB_STATIC_ENDPOINT: ${{ steps.ydb.outputs.static-endpoint }}
+          YDB_DATABASE: ${{ steps.ydb.outputs.database }}
+        run: |
+          test "${YDB_ENDPOINT}" = "${YDB_STATIC_ENDPOINT}"
+          test "${YDB_DATABASE}" = "/local"
+          curl --fail --silent --show-error "${LOCAL_YDB_MONITORING_URL}/viewer/json/tenants?database=%2Flocal" >/tmp/local-ydb-tenants.json

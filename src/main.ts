@@ -16,17 +16,17 @@ async function run(): Promise<void> {
     runtimeConfig = buildRuntimeConfig(inputs, ports, resolvedVersion, process.env);
     saveRuntimeState(runtimeConfig);
 
-    core.info(`Starting ${runtimeConfig.image} for ${runtimeConfig.tenantPath}`);
+    core.info(`Starting ${runtimeConfig.image} for ${runtimeConfig.databasePath} (${runtimeConfig.topology} topology)`);
     await setupLocalYdb(runtimeConfig, runner);
 
     core.setOutput("endpoint", runtimeConfig.endpoint);
     core.setOutput("static-endpoint", runtimeConfig.staticEndpoint);
-    core.setOutput("database", runtimeConfig.tenantPath);
+    core.setOutput("database", runtimeConfig.databasePath);
     core.setOutput("monitoring-url", runtimeConfig.monitoringUrl);
     core.setOutput("image", runtimeConfig.image);
     core.setOutput("resolved-version", runtimeConfig.version);
     core.exportVariable("LOCAL_YDB_ENDPOINT", runtimeConfig.endpoint);
-    core.exportVariable("LOCAL_YDB_DATABASE", runtimeConfig.tenantPath);
+    core.exportVariable("LOCAL_YDB_DATABASE", runtimeConfig.databasePath);
     core.exportVariable("LOCAL_YDB_MONITORING_URL", runtimeConfig.monitoringUrl);
 
     if (runtimeConfig.auth) {

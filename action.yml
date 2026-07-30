@@ -11,12 +11,16 @@ inputs:
     description: Exact ghcr.io/ydb-platform/local-ydb tag, or latest to resolve the newest numeric tag.
     required: false
     default: "26.1.1.6"
+  topology:
+    description: Stack topology. tenant starts static and dynamic nodes; root starts only the /local static database.
+    required: false
+    default: tenant
   tenant:
-    description: Tenant database path to create.
+    description: Tenant database path to create when topology is tenant. Ignored when topology is root.
     required: false
     default: /local/test
   auth:
-    description: Enable native YDB auth after bootstrapping the tenant.
+    description: Enable native YDB auth after bootstrapping the selected topology.
     required: false
     default: "false"
   cleanup:
@@ -27,7 +31,7 @@ inputs:
     description: Host port for the static/root gRPC endpoint. Auto-selected when omitted.
     required: false
   dynamic-grpc-port:
-    description: Host port for the tenant dynamic-node gRPC endpoint. Auto-selected when omitted.
+    description: Host port for the tenant dynamic-node gRPC endpoint. Auto-selected for tenant topology; invalid for root.
     required: false
   monitoring-port:
     description: Host port for the local-ydb monitoring endpoint. Auto-selected when omitted.
@@ -38,13 +42,13 @@ inputs:
 
 outputs:
   endpoint:
-    description: Dynamic tenant gRPC endpoint for application clients.
+    description: Application gRPC endpoint. Dynamic for tenant topology; equal to static-endpoint for root.
   static-endpoint:
     description: Static/root gRPC endpoint.
   database:
-    description: Tenant database path.
+    description: Effective database path. The tenant input for tenant topology; /local for root.
   monitoring-url:
-    description: Loopback monitoring URL.
+    description: Monitoring URL for host steps. Root topology also exposes this port to sibling Docker containers.
   image:
     description: Full Docker image reference used by the action.
   resolved-version:

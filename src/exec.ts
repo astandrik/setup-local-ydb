@@ -18,6 +18,10 @@ export interface RunOptions {
   cwd?: string;
 }
 
+export interface CommandRunnerLike {
+  run(command: string, args?: string[], options?: RunOptions): Promise<CommandResult>;
+}
+
 export class CommandError extends Error {
   constructor(readonly result: CommandResult) {
     const output = resultOutput(result).trim();
@@ -25,7 +29,7 @@ export class CommandError extends Error {
   }
 }
 
-export class CommandRunner {
+export class CommandRunner implements CommandRunnerLike {
   async run(command: string, args: string[] = [], options: RunOptions = {}): Promise<CommandResult> {
     const timeoutMs = options.timeoutMs ?? 30_000;
     const redactions = options.redactions ?? [];
