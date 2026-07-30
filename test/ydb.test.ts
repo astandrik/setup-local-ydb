@@ -1,8 +1,7 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import YAML from "yaml";
 import { buildRuntimeConfig, parseActionInputs, type GetInput, type RuntimeConfig } from "../src/config";
 import type { CommandResult, RunOptions } from "../src/exec";
 import { cleanupLocalYdb, collectDiagnostics, setupLocalYdb } from "../src/ydb";
@@ -42,6 +41,32 @@ class RecordingRunner {
       ok: true,
       timedOut: false
     };
+  }
+}
+
+class MissingTenantAfterAuthRunner extends RecordingRunner {
+  private authenticatedStatusAttempts = 0;
+
+  override async run(
+    command: string,
+    args: string[] = [],
+    options: RunOptions = {}
+  ): Promise<CommandResult> {
+    const result = await super.run(command, args, options);
+    const joinedArgs = args.join(" ");
+    if (
+      joinedArgs.includes("admin database /local/test status") &&
+      this.authenticatedStatusAttempts++ === 0
+    ) {
+      return {
+        ...result,
+        exitCode: 1,
+        stdout: "",
+        stderr: "Unknown tenant /local/test",
+        ok: false
+      };
+    }
+    return result;
   }
 }
 
@@ -135,24 +160,23 @@ describe("setupLocalYdb", () => {
     expect(fetchMock).toHaveBeenCalledWith(`${config.monitoringUrl}/viewer/json/whoami`);
   });
 
-  it("does not restrict database bootstrap during tenant auth hardening", async () => {
+  it("hardens the static node before creating an authenticated tenant node", async () => {
     const config = await runtimeConfig("tenant", true);
-    const runner = new RecordingRunner();
+    const runner = new MissingTenantAfterAuthRunner();
 
     await setupLocalYdb(config, runner, {
       sleep: noWait,
       fetch: vi.fn(async () => new Response("", { status: 401 }))
     });
 
-    const document = YAML.parse(await readFile(config.authConfigPath, "utf8")) as {
-      domains_config: {
-        security_config: Record<string, unknown>;
-      };
-    };
-    const securityConfig = document.domains_config.security_config;
-
-    expect(securityConfig.database_allowed_sids).toBeUndefined();
-    expect(securityConfig.bootstrap_allowed_sids).toBeUndefined();
+    const runCalls = dockerRunCalls(runner);
+    expect(runCalls).toHaveLength(2);
+    expect(runCalls[1].args.join(" ")).toContain(
+      "--auth-token-file /run/local-ydb/dynamic-node-auth.pb"
+    );
+    expect(runner.calls.some(({ args }) =>
+      args.join(" ").includes("admin database /local/test create hdd:1")
+    )).toBe(true);
   });
 });
 

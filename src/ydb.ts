@@ -37,6 +37,8 @@ export async function setupLocalYdb(
 
   if (config.topology === "root") {
     await waitForRootMetadata(config, runner, false, dependencies);
+  } else if (config.auth) {
+    await waitForRootMetadata(config, runner, false, dependencies);
   } else {
     await ensureTenant(config, runner, false, dependencies);
     core.info(`Starting dynamic tenant node ${requireDynamicContainer(config)}`);
@@ -295,9 +297,11 @@ async function prepareAuthArtifacts(config: RuntimeConfig, runner: CommandRunner
   const securityConfig = ensureRecord(domainsConfig, "security_config");
   securityConfig.enforce_user_token_requirement = true;
   const allowedSids = unique([config.dynamicNodeAuthSid, config.rootUser, "root@builtin"]);
+  securityConfig.database_allowed_sids = [...allowedSids];
   securityConfig.viewer_allowed_sids = [...allowedSids];
   securityConfig.monitoring_allowed_sids = [...allowedSids];
   securityConfig.administration_allowed_sids = [...allowedSids];
+  securityConfig.bootstrap_allowed_sids = [...allowedSids];
   securityConfig.register_dynamic_node_allowed_sids = [...allowedSids];
 
   const rootPassword = extractRootPassword(securityConfig);
