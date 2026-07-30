@@ -48,7 +48,7 @@ outputs:
   database:
     description: Effective database path. The tenant input for tenant topology; /local for root.
   monitoring-url:
-    description: Loopback monitoring URL.
+    description: Monitoring URL for host steps. Root topology also exposes this port to sibling Docker containers.
   image:
     description: Full Docker image reference used by the action.
   resolved-version:

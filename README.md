@@ -83,7 +83,7 @@ Use `astandrik/setup-local-ydb@v1` to receive compatible v1 updates. Pin an immu
 | `endpoint` | Application gRPC endpoint: dynamic for `tenant`, static for `root`. |
 | `static-endpoint` | Static/root gRPC endpoint. |
 | `database` | Effective database path: the tenant input for `tenant`, `/local` for `root`. |
-| `monitoring-url` | Loopback monitoring URL. |
+| `monitoring-url` | Monitoring URL for host steps. In `root` topology the same port is reachable from sibling Docker containers through the runner host. |
 | `image` | Full Docker image reference used by the action. |
 | `resolved-version` | Concrete image tag used by the action. |
 | `username` | `root` when `auth: true`. |
@@ -94,7 +94,8 @@ The same values are also exported as `LOCAL_YDB_ENDPOINT`, `LOCAL_YDB_DATABASE`,
 ## Notes
 
 - Linux runners with Docker are required.
-- All host ports are bound to `127.0.0.1`.
+- Static gRPC and all `tenant` topology ports are bound to `127.0.0.1`.
+- `root` monitoring is published on all runner interfaces so sibling Docker containers can connect through `host.docker.internal:<monitoring-port>`; use `auth: true` on untrusted runners.
 - `root` topology does not create a CMS tenant, GraphShard, dynamic node, or dynamic-node token.
 - Prefer exact image tags for reproducible CI.
 - SSH profiles, MCP tools, storage migration, version upgrades, dump/restore, and remote-host operations are outside v1 scope.

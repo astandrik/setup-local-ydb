@@ -120,6 +120,7 @@ describe("setupLocalYdb", () => {
 
     expect(dockerRunCalls(runner)).toHaveLength(2);
     expect(dockerRunCalls(runner)[0].args).toContain("YDB_FEATURE_FLAGS=enable_graph_shard");
+    expect(dockerRunCalls(runner)[0].args).toContain("127.0.0.1:38765:8765");
     expect(dockerRunCalls(runner)[1].args).toContain(config.dynamicContainer);
   });
 
@@ -136,6 +137,7 @@ describe("setupLocalYdb", () => {
     expect(runCalls).toHaveLength(1);
     expect(runCalls[0].args).not.toContain("YDB_FEATURE_FLAGS=enable_graph_shard");
     expect(runCalls[0].args.filter((arg) => arg === "-p")).toHaveLength(2);
+    expect(runCalls[0].args).toContain("0.0.0.0:38765:8765");
     expect(runner.calls.some(({ args }) =>
       args.join(" ").includes("/ydb -e grpc://localhost:32136 -d /local scheme ls /local")
     )).toBe(true);

@@ -92,6 +92,7 @@ async function startStaticNode(config: RuntimeConfig, runner: CommandRunnerLike)
   const tenantPublishedPort = config.topology === "tenant"
     ? ["-p", `127.0.0.1:${requireDynamicGrpcPort(config)}:${requireDynamicGrpcPort(config)}`]
     : [];
+  const monitoringPublishHost = config.topology === "root" ? "0.0.0.0" : "127.0.0.1";
   const topologyEnvironment = config.topology === "tenant"
     ? ["-e", "YDB_FEATURE_FLAGS=enable_graph_shard"]
     : [];
@@ -103,7 +104,7 @@ async function startStaticNode(config: RuntimeConfig, runner: CommandRunnerLike)
     "--restart", "no",
     "-p", `127.0.0.1:${config.ports.staticGrpc}:${config.ports.staticGrpc}`,
     ...tenantPublishedPort,
-    "-p", `127.0.0.1:${config.ports.monitoring}:8765`,
+    "-p", `${monitoringPublishHost}:${config.ports.monitoring}:8765`,
     "-v", `${config.volume}:/ydb_data`,
     "-e", `GRPC_PORT=${config.ports.staticGrpc}`,
     "-e", "MON_PORT=8765",
