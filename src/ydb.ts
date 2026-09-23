@@ -1,4 +1,4 @@
-import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, rm, writeFile } from "node:fs/promises";
 import * as core from "./core";
 import YAML from "yaml";
 import type { RuntimeConfig } from "./config";
@@ -55,20 +55,84 @@ export async function setupLocalYdb(
   }
 }
 
+export interface CleanupResult {
+  resource: string;
+  name: string;
+  status: "removed" | "absent" | "failed";
+  errors: string[];
+}
+
 export async function cleanupLocalYdb(
   config: Pick<RuntimeConfig, "dynamicContainer" | "staticContainer" | "network" | "volume" | "authDir">,
   runner: CommandRunnerLike
-): Promise<void> {
-  try {
-    if (config.dynamicContainer) {
-      await runner.run("docker", ["rm", "-f", config.dynamicContainer], { allowFailure: true, timeoutMs: 60_000 });
-    }
-    await runner.run("docker", ["rm", "-f", config.staticContainer], { allowFailure: true, timeoutMs: 60_000 });
-    await runner.run("docker", ["network", "rm", config.network], { allowFailure: true, timeoutMs: 60_000 });
-    await runner.run("docker", ["volume", "rm", config.volume], { allowFailure: true, timeoutMs: 60_000 });
-  } finally {
-    await rm(config.authDir, { recursive: true, force: true });
+): Promise<CleanupResult[]> {
+  const results: CleanupResult[] = [];
+  const containers = [config.dynamicContainer, config.staticContainer].filter(
+    (name): name is string => Boolean(name)
+  );
+  const resources = [
+    ...containers.map((name) => ({ resource: "container", name })),
+    { resource: "network", name: config.network },
+    { resource: "volume", name: config.volume }
+  ];
+  async function docker(args: string[]): Promise<string> {
+    const result = await runner.run("docker", args, { allowFailure: true, timeoutMs: 60_000 });
+    if (result.timedOut) throw new Error(`Docker command timed out: ${result.command}`);
+    if (!result.ok) throw new CommandError(result);
+    return result.stdout;
   }
+  for (const { resource, name } of resources) {
+    const listArgs = resource === "container"
+      ? ["container", "ls", "--all", "--format", "{{.Names}}"]
+      : [resource, "ls", "--format", "{{.Name}}"];
+    const removeArgs = resource === "container" ? ["rm", "-f", name] : [resource, "rm", name];
+    results.push(await cleanupResource(
+      resource, name,
+      async () => (await docker(listArgs)).split(/\r?\n/).includes(name),
+      async () => { await docker(removeArgs); }
+    ));
+  }
+  results.push(await cleanupResource("auth directory", config.authDir, async () => {
+    try {
+      await lstat(config.authDir);
+      return true;
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+      throw error;
+    }
+  }, () => rm(config.authDir, { recursive: true, force: true })));
+  return results;
+}
+
+async function cleanupResource(
+  resource: string,
+  name: string,
+  exists: () => Promise<boolean>,
+  remove: () => Promise<void>
+): Promise<CleanupResult> {
+  const errors: string[] = [];
+  let present: boolean | undefined;
+  try {
+    present = await exists();
+  } catch (error) {
+    errors.push(`Before cleanup: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  // A failed inspection must not prevent attempts to clean the remaining known resources.
+  if (present !== false) {
+    try {
+      await remove();
+    } catch (error) {
+      errors.push(`Removal: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  try {
+    if (await exists()) errors.push("Resource still exists after cleanup");
+  } catch (error) {
+    errors.push(`After cleanup: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  let status: CleanupResult["status"] = present === false ? "absent" : "removed";
+  if (errors.length) status = "failed";
+  return { resource, name, status, errors };
 }
 
 export async function collectDiagnostics(

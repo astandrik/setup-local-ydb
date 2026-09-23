@@ -654,6 +654,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.saveRuntimeState = saveRuntimeState;
 exports.readRuntimeState = readRuntimeState;
 const core = __importStar(__nccwpck_require__(5050));
+const node_path_1 = __nccwpck_require__(6760);
 function saveRuntimeState(config) {
     core.saveState("cleanup", String(config.cleanup));
     core.saveState("topology", config.topology);
@@ -666,16 +667,33 @@ function saveRuntimeState(config) {
     core.saveState("authDir", config.authDir);
 }
 function readRuntimeState() {
-    const topology = core.getState("topology") === "root" ? "root" : "tenant";
-    return {
-        cleanup: core.getState("cleanup") === "true",
-        topology,
+    const cleanup = core.getState("cleanup");
+    const topology = core.getState("topology");
+    const parsedTopology = topology === "root" ? "root" : "tenant";
+    const state = {
+        cleanup: cleanup === "true",
+        topology: parsedTopology,
         staticContainer: core.getState("staticContainer"),
         dynamicContainer: core.getState("dynamicContainer") || undefined,
         network: core.getState("network"),
         volume: core.getState("volume"),
         authDir: core.getState("authDir")
     };
+    if (!cleanup && !topology && !state.staticContainer && !state.dynamicContainer &&
+        !state.network && !state.volume && !state.authDir)
+        return undefined;
+    if (cleanup === "false")
+        return state;
+    const prefix = state.staticContainer.replace(/-static$/, "");
+    if (cleanup !== "true" || !["root", "tenant"].includes(topology) ||
+        !/^[a-z0-9][a-z0-9_.-]*$/.test(prefix) ||
+        state.staticContainer !== `${prefix}-static` ||
+        state.network !== `${prefix}-net` || state.volume !== `${prefix}-data` ||
+        !(0, node_path_1.isAbsolute)(state.authDir) || (0, node_path_1.basename)(state.authDir) !== `${prefix}-auth` ||
+        (topology === "tenant" && state.dynamicContainer !== `${prefix}-dynamic`) ||
+        (topology === "root" && state.dynamicContainer))
+        throw new Error("Incomplete or invalid local-ydb cleanup state; refusing to guess resource names");
+    return state;
 }
 //# sourceMappingURL=state.js.map
 
@@ -892,17 +910,70 @@ async function setupLocalYdb(config, runner, dependencyOverrides = {}) {
     }
 }
 async function cleanupLocalYdb(config, runner) {
-    try {
-        if (config.dynamicContainer) {
-            await runner.run("docker", ["rm", "-f", config.dynamicContainer], { allowFailure: true, timeoutMs: 60_000 });
+    const results = [];
+    const containers = [config.dynamicContainer, config.staticContainer].filter((name) => Boolean(name));
+    const resources = [
+        ...containers.map((name) => ({ resource: "container", name })),
+        { resource: "network", name: config.network },
+        { resource: "volume", name: config.volume }
+    ];
+    async function docker(args) {
+        const result = await runner.run("docker", args, { allowFailure: true, timeoutMs: 60_000 });
+        if (result.timedOut)
+            throw new Error(`Docker command timed out: ${result.command}`);
+        if (!result.ok)
+            throw new exec_1.CommandError(result);
+        return result.stdout;
+    }
+    for (const { resource, name } of resources) {
+        const listArgs = resource === "container"
+            ? ["container", "ls", "--all", "--format", "{{.Names}}"]
+            : [resource, "ls", "--format", "{{.Name}}"];
+        const removeArgs = resource === "container" ? ["rm", "-f", name] : [resource, "rm", name];
+        results.push(await cleanupResource(resource, name, async () => (await docker(listArgs)).split(/\r?\n/).includes(name), async () => { await docker(removeArgs); }));
+    }
+    results.push(await cleanupResource("auth directory", config.authDir, async () => {
+        try {
+            await (0, promises_1.lstat)(config.authDir);
+            return true;
         }
-        await runner.run("docker", ["rm", "-f", config.staticContainer], { allowFailure: true, timeoutMs: 60_000 });
-        await runner.run("docker", ["network", "rm", config.network], { allowFailure: true, timeoutMs: 60_000 });
-        await runner.run("docker", ["volume", "rm", config.volume], { allowFailure: true, timeoutMs: 60_000 });
+        catch (error) {
+            if (error instanceof Error && "code" in error && error.code === "ENOENT")
+                return false;
+            throw error;
+        }
+    }, () => (0, promises_1.rm)(config.authDir, { recursive: true, force: true })));
+    return results;
+}
+async function cleanupResource(resource, name, exists, remove) {
+    const errors = [];
+    let present;
+    try {
+        present = await exists();
     }
-    finally {
-        await (0, promises_1.rm)(config.authDir, { recursive: true, force: true });
+    catch (error) {
+        errors.push(`Before cleanup: ${error instanceof Error ? error.message : String(error)}`);
     }
+    // A failed inspection must not prevent attempts to clean the remaining known resources.
+    if (present !== false) {
+        try {
+            await remove();
+        }
+        catch (error) {
+            errors.push(`Removal: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    try {
+        if (await exists())
+            errors.push("Resource still exists after cleanup");
+    }
+    catch (error) {
+        errors.push(`After cleanup: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    let status = present === false ? "absent" : "removed";
+    if (errors.length)
+        status = "failed";
+    return { resource, name, status, errors };
 }
 async function collectDiagnostics(config, runner) {
     await core.group("local-ydb diagnostics", async () => {

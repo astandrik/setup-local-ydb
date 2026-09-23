@@ -183,19 +183,24 @@ describe("setupLocalYdb", () => {
 });
 
 describe("topology-aware teardown and diagnostics", () => {
-  it("cleans only root resources and the action-scoped auth directory", async () => {
+  it("keeps a Docker timeout visible and still cleans the auth directory", async () => {
     const config = await runtimeConfig("root");
     const runner = new RecordingRunner();
     await mkdir(config.authDir, { recursive: true });
     await writeFile(join(config.authDir, "artifact"), "test");
 
-    await cleanupLocalYdb(config, runner);
-
-    expect(runner.calls.map(({ args }) => args)).toEqual([
-      ["rm", "-f", config.staticContainer],
-      ["network", "rm", config.network],
-      ["volume", "rm", config.volume]
-    ]);
+    const run = runner.run.bind(runner);
+    runner.run = async (command, args, options) => {
+      const result = await run(command, args, options);
+      return args?.[0] === "container" ? { ...result, timedOut: true } : result;
+    };
+    const results = await cleanupLocalYdb(config, runner);
+    expect(results.find(({ resource }) => resource === "container")).toMatchObject({
+      status: "failed",
+      errors: [expect.stringContaining("timed out"), expect.stringContaining("timed out")]
+    });
+    expect(results.find(({ resource }) => resource === "volume")?.status).toBe("absent");
+    expect(results.find(({ resource }) => resource === "auth directory")?.status).toBe("removed");
     await expect(stat(config.authDir)).rejects.toThrow();
   });
 
@@ -209,5 +214,15 @@ describe("topology-aware teardown and diagnostics", () => {
       ["ps", "-a", "--filter", `name=${config.staticContainer}`],
       ["logs", "--tail", "120", config.staticContainer]
     ]);
+  });
+
+  it("reports filesystem cleanup errors without deleting the enclosing file", async () => {
+    const config = await runtimeConfig("root");
+    const file = join(config.authDir, "file");
+    await mkdir(config.authDir, { recursive: true });
+    await writeFile(file, "keep");
+    const results = await cleanupLocalYdb({ ...config, authDir: join(file, "child") }, new RecordingRunner());
+    expect(results.find(({ resource }) => resource === "auth directory")?.status).toBe("failed");
+    expect((await stat(file)).isFile()).toBe(true);
   });
 });

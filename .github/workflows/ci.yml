@@ -51,6 +51,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
       - name: Start local YDB
         id: ydb
         uses: ./
@@ -59,6 +63,7 @@ jobs:
           topology: ${{ matrix.topology }}
           tenant: /local/test
           auth: ${{ matrix.auth }}
+          container-prefix: cleanup-smoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
 
       - name: Verify topology outputs and readiness
         env:
@@ -89,3 +94,9 @@ jobs:
           else
             curl --fail --silent --show-error "${MONITORING_URL}/viewer/json/capabilities?database=%2Flocal%2Ftest" >/tmp/local-ydb-viewer.json
           fi
+
+      - name: Verify bundled cleanup and failure recovery
+        env:
+          CLEANUP_PREFIX: cleanup-smoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+          CLEANUP_TOPOLOGY: ${{ matrix.topology }}
+        run: node test/smoke-cleanup.cjs
