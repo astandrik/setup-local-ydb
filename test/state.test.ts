@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildRuntimeConfig, parseActionInputs, type GetInput } from "../src/config";
 import { readRuntimeState, saveRuntimeState } from "../src/state";
 
@@ -17,6 +17,7 @@ function getInput(values: Record<string, string>): GetInput {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const key of stateKeys) {
     delete process.env[`STATE_${key}`];
   }
@@ -24,6 +25,7 @@ afterEach(() => {
 
 describe("runtime state", () => {
   it("round-trips root cleanup state without a dynamic container", () => {
+    vi.stubEnv("RUNNER_TEMP", "/tmp/runner");
     const inputs = parseActionInputs(getInput({
       topology: "root",
       "container-prefix": "setup-local-ydb-root"

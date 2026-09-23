@@ -1,5 +1,6 @@
 import * as core from "./core";
-import { basename, isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { tmpdir } from "node:os";
 import type { RuntimeConfig, Topology } from "./config";
 
 export function saveRuntimeState(config: RuntimeConfig): void {
@@ -44,7 +45,8 @@ export function readRuntimeState(): {
     !/^[a-z0-9][a-z0-9_.-]*$/.test(prefix) ||
     state.staticContainer !== `${prefix}-static` ||
     state.network !== `${prefix}-net` || state.volume !== `${prefix}-data` ||
-    !isAbsolute(state.authDir) || basename(state.authDir) !== `${prefix}-auth` ||
+    !isAbsolute(state.authDir) ||
+    state.authDir !== join(process.env.RUNNER_TEMP || tmpdir(), `${prefix}-auth`) ||
     (topology === "tenant" && state.dynamicContainer !== `${prefix}-dynamic`) ||
     (topology === "root" && state.dynamicContainer)
   ) throw new Error("Incomplete or invalid local-ydb cleanup state; refusing to guess resource names");

@@ -31,6 +31,7 @@ function fixture(topology = "root") {
   };
   const env: NodeJS.ProcessEnv = {
     PATH: bin,
+    RUNNER_TEMP: directory,
     MOCK_DOCKER_STATE: file,
     GITHUB_STEP_SUMMARY: summary,
     STATE_cleanup: "true",
@@ -151,4 +152,17 @@ it.each([
   expect(f.run().status).toBe(1);
   expect(f.state.calls).toEqual([]);
   expect(existsSync(f.authDir)).toBe(true);
+});
+
+it("rejects a same-named auth directory outside the runner temporary directory", () => {
+  const f = fixture();
+  const outside = mkdtempSync(join(tmpdir(), "cleanup-neighbor-"));
+  directories.push(outside);
+  const foreignAuth = join(outside, "fixture-auth");
+  mkdirSync(foreignAuth);
+  writeFileSync(join(foreignAuth, "keep"), "unrelated");
+  f.env.STATE_authDir = foreignAuth;
+  expect(f.run().status).toBe(1);
+  expect(f.state.calls).toEqual([]);
+  expect(readFileSync(join(foreignAuth, "keep"), "utf8")).toBe("unrelated");
 });

@@ -655,6 +655,7 @@ exports.saveRuntimeState = saveRuntimeState;
 exports.readRuntimeState = readRuntimeState;
 const core = __importStar(__nccwpck_require__(5050));
 const node_path_1 = __nccwpck_require__(6760);
+const node_os_1 = __nccwpck_require__(8161);
 function saveRuntimeState(config) {
     core.saveState("cleanup", String(config.cleanup));
     core.saveState("topology", config.topology);
@@ -689,7 +690,8 @@ function readRuntimeState() {
         !/^[a-z0-9][a-z0-9_.-]*$/.test(prefix) ||
         state.staticContainer !== `${prefix}-static` ||
         state.network !== `${prefix}-net` || state.volume !== `${prefix}-data` ||
-        !(0, node_path_1.isAbsolute)(state.authDir) || (0, node_path_1.basename)(state.authDir) !== `${prefix}-auth` ||
+        !(0, node_path_1.isAbsolute)(state.authDir) ||
+        state.authDir !== (0, node_path_1.join)(process.env.RUNNER_TEMP || (0, node_os_1.tmpdir)(), `${prefix}-auth`) ||
         (topology === "tenant" && state.dynamicContainer !== `${prefix}-dynamic`) ||
         (topology === "root" && state.dynamicContainer))
         throw new Error("Incomplete or invalid local-ydb cleanup state; refusing to guess resource names");
