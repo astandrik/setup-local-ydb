@@ -70,11 +70,13 @@ Use `astandrik/setup-local-ydb@v1` to receive compatible v1 updates. Pin an immu
 | `topology` | `tenant` | `tenant` starts static + dynamic nodes; `root` starts only static `/local`. |
 | `tenant` | `/local/test` | Tenant database path for `tenant` topology. Ignored for `root`. |
 | `auth` | `false` | Enable native YDB auth after bootstrapping the selected topology. |
-| `cleanup` | `true` | Remove action-created containers, network, volume, and auth directory in the post step. |
+| `cleanup` | `true` | Remove and verify absence of action-created containers, network, volume, and auth directory in the post step. Cleanup errors fail the job. |
 | `static-grpc-port` | auto | Host port for `/local` root/static gRPC. |
 | `dynamic-grpc-port` | auto | Host port for the tenant dynamic-node gRPC endpoint. Not applicable to `root`. |
 | `monitoring-port` | auto | Host port for monitoring. |
 | `container-prefix` | auto | Prefix for Docker resource names. |
+
+With `cleanup: true`, the post step records each resource's cleanup result in the log and job summary. Already absent resources are accepted. Failed removal commands, timeouts, remaining resources or unavailable verification fail the post step, while cleanup of the other resources continues. This also applies when an earlier step failed. `cleanup: false` explicitly leaves resources in place. Missing state before setup needs no cleanup; incomplete state fails without guessing resource names. Cleanup cannot be guaranteed if the runner is forcibly terminated before the post step finishes.
 
 ## Outputs
 
