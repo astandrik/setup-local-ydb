@@ -11,14 +11,27 @@ permissions:
 jobs:
   count:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Generate action users badge endpoint
-        uses: cicirello/count-action-users@v1
+      - uses: actions/setup-node@v6
         with:
-          action-list: astandrik/setup-local-ydb
-          target-directory: docs/endpoints
+          node-version: "24"
+
+      - name: Generate action users badge endpoint
+        run: node .github/scripts/count-action-users.cjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit updated badge
+        run: |
+          if git diff --quiet -- docs/endpoints/setup-local-ydb.json; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- docs/endpoints/setup-local-ydb.json
+          git commit -m "Update action users badge" -- docs/endpoints/setup-local-ydb.json
+          git push
